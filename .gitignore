@@ -1,0 +1,32 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local/editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+
+# Generated LaTeX intermediates and logs
+*.aux
+*.log
+data/*_log.txt
+data/*.log
+*.out
+*.toc
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json

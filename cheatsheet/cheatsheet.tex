@@ -1,0 +1,164 @@
+\documentclass[10pt]{article}
+\usepackage[letterpaper,margin=0.7in]{geometry}
+\usepackage{times,booktabs,amsmath,amssymb,array}
+\setlength{\parindent}{0pt}\setlength{\parskip}{4pt}
+\usepackage{etoolbox}\AtBeginEnvironment{itemize}{\setlength{\itemsep}{1pt}\setlength{\topsep}{2pt}\setlength{\parsep}{0pt}}\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{1pt}\setlength{\topsep}{2pt}\setlength{\parsep}{0pt}}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\h}[1]{\vspace{4pt}{\large\bfseries #1}\par\vspace{1pt}\hrule\vspace{3pt}}
+\newcommand{\q}[1]{\par\vspace{2pt}\textbf{Q: #1}\par\vspace{-3pt}}
+\newcommand{\ind}{\mathbb{1}}
+\pagestyle{empty}
+\begin{document}
+{\LARGE\bfseries Cheat Sheet: ML in the Regime-Change Project}\\[2pt]
+{\small Aditya Ranka and Parth Bagal \quad|\quad Everything you need to explain the ML side in the presentation}
+
+\h{1. The 60-second story}
+\textbf{Problem.} Markets switch between calm and stressed ``regimes''. Models that assume constant behaviour break when the regime changes.
+\textbf{Idea.} Use \emph{change point detection} (CPD) to find where the statistical behaviour of NIFTY~50 shifts, check the shifts against real crises, compare with an HMM, then test honestly whether regime information \emph{predicts} anything useful.
+\textbf{Answer we found.} CPD finds shifts near real crises far better than chance, but regime flags do \emph{not} improve forecasts of future volatility or drawdowns beyond standard volatility measures and India VIX. A clean negative result, tested without cheating.
+
+\h{2. The data feed and dataset structure}
+\textbf{Source.} Yahoo Finance via the \textit{yfinance} Python library. Daily \emph{adjusted close} prices, Sep.\ 2007 to Dec.\ 2025.
+
+\begin{tabular}{@{}lll@{}}\toprule
+Column & What it is & Coverage\\\midrule
+NIFTY & NIFTY 50 index (main series) & 2007-09-17 on, 4{,}486 prices\\
+VIX & India VIX (market-implied volatility) & from 2008-03-03\\
+GOLD & Gold BeES ETF (defensive asset) & from 2009-01-02\\
+LIQ & Liquid BeES ETF (cash proxy) & from 2009-01-02\\
+BANK & NIFTY Bank (downloaded, not used in results) & 2007-09-17 on\\\bottomrule
+\end{tabular}
+
+\textbf{Raw file:} \textit{data/prices\_raw.csv}, one row per trading day (index Date, format YYYY-MM-DD), five price columns.
+
+\textbf{Derived series (all from the NIFTY close $P_t$):}
+\begin{itemize}
+\item \textbf{Log-return} $r_t=\ln(P_t/P_{t-1})$: 4{,}485 values. Used because returns, not prices, are roughly stationary and additive over time. Excess kurtosis is 15.2 (fat tails).
+\item \textbf{21-day realised volatility} $\sigma_t=\sqrt{252}\times$ std of the last 21 returns: how wild the market has recently been, annualised.
+\end{itemize}
+
+\textbf{The ML dataset (what the models actually see).} \textit{data/features.csv}: \textbf{791 rows} = one forecast date per week (2010-10-11 to 2025-12-01), 14 columns:
+
+\begin{tabular}{@{}lp{5.2in}@{}}\toprule
+Group & Columns\\\midrule
+Identifiers & \textit{date} (forecast date $d$), \textit{tend} (last date of the target window)\\
+Baseline features & \textit{v21} = trailing 21-day vol, \textit{ew} = EWMA vol ($\lambda{=}0.94$), \textit{vix} = India VIX, all known before $d$\\
+Regime features & \textit{cpd\_ratio} (last CPD segment vol / median vol), \textit{cpd\_flag} (1 if ratio $>1.3$), \textit{hmm\_prob} (HMM probability of the stress state)\\
+Targets (labels) & \textit{y\_vol} = log realised vol over the next 21 trading days (regression); \textit{y\_dd} = 1 if a drop worse than 5\% occurs in the next 21 days (classification)\\
+Extras (not used) & \textit{days\_since}, \textit{n\_breaks}, \textit{fut\_vol}, \textit{fut\_mdd} (diagnostics and descriptive tables)\\\bottomrule
+\end{tabular}
+
+\textbf{One row means:} ``standing at the start of this week, here is what we knew (features); here is what happened over the next 21 trading days (targets).'' That is the supervised-learning setup: $X$ = knowledge before $d$, $y$ = the future.
+
+\textbf{Sizes to remember:} 791 total samples $\to$ first 150 needed for training $\to$ \textbf{637 out-of-sample forecasts} (2013-09-23 to 2025-12-01). Out-of-sample drawdown base rate 13.5\% (86 positives).
+
+\h{3. The pipeline in six steps}
+\begin{enumerate}
+\item \textbf{Prepare data:} prices $\to$ log-returns $\to$ rolling volatility.
+\item \textbf{Detect change points (unsupervised):} PELT segments the return series where mean or variance shifts.
+\item \textbf{Label regimes:} a segment is ``stress'' if its volatility exceeds $1.3\times$ the median volatility.
+\item \textbf{Validate:} are detected breaks near 9 known crises? Compare against random breaks and against an HMM.
+\item \textbf{Forecast (supervised):} at each week, use only past data to compute features, fit ridge and logistic regression on past samples, predict the next 21 days.
+\item \textbf{Judge:} out-of-sample $R^2$, statistical tests, AUC; plus a trading backtest (regime-switching allocation).
+\end{enumerate}
+
+\h{4. What each model is and does}
+\textbf{(a) PELT change point detection} \emph{(unsupervised; no labels)}\par
+Finds break times $\tau_1<\dots<\tau_K$ that minimise \;$\sum_{\text{segments}}\text{cost}(\text{segment})+\beta K$.
+\begin{itemize}
+\item \emph{Cost} = how badly one Gaussian (mean, variance) fits a segment. Splitting where behaviour changes lowers the cost.
+\item \emph{Penalty} $\beta K$ stops it from cutting everywhere. Bigger $\beta$ means fewer breaks. We use $\beta=3\ln n$ (BIC-style): 25.2 on the full data, 19.9 on 750-day windows.
+\item \emph{Why PELT:} exact optimum (not greedy) and fast (roughly linear time). Constraints: segments of at least 20 days, breaks on a 5-day grid.
+\item It is \textbf{offline}: it sees the whole series, so it finds breaks \emph{after the fact}.
+\end{itemize}
+\textbf{(b) Hidden Markov Model (HMM)} \emph{(unsupervised; the benchmark)}\par
+Assumes the market is secretly in one of 2 hidden states (calm or stress), each with its own Gaussian returns, and the state follows a Markov chain. Fitted by EM (Baum--Welch). The state with higher variance = stress. Feature used: probability the \emph{current} day is in stress. Weakness: you must choose the number of states in advance, and flips often (43 switches vs.\ 16 CPD breaks).
+
+\textbf{(c) Ridge regression} \emph{(supervised; Task V: forecast next-21-day log volatility)}\par
+Linear model $\hat y=b+\mathbf w^\top\mathbf z$, minimising squared error $+\;\alpha\|\mathbf w\|^2$ with $\alpha=1$. The penalty shrinks coefficients, which helps because our features are highly correlated (trailing vol, EWMA vol, VIX all move together) and data is small. Features are standardised using \emph{training data only}.
+
+\textbf{(d) Logistic regression} \emph{(supervised; Task D: will a $>$5\% drawdown happen?)}\par
+Outputs a probability $\hat p=\sigma(b+\mathbf w^\top\mathbf z)$, trained by minimising log-loss with an L2 penalty ($C=1$). Same standardisation.
+
+\textbf{Why such simple models?} Only about 640 weekly forecasts, and overlapping, noisy targets. Deep nets (LSTM etc.) would overfit and are unnecessary: the question is \emph{whether regime features carry information}, and a simple linear model is the fairest test. Hyperparameters were fixed in advance, never tuned, so we cannot have overfit to the test period.
+
+\textbf{Feature sets (the ablation).} F0 = trailing + EWMA vol (baseline). F1 = F0 + CPD features. F2 = F0 + HMM. F3 = F0 + VIX. F4 = everything. Plus VIX-only and CPD+HMM-only. Because each set differs by one addition, the gain or loss from each feature group is measured directly.
+
+\h{5. The ML-rigour concepts (this is what examiners probe)}
+\begin{tabular}{@{}p{1.55in}p{5.4in}@{}}\toprule
+Concept & Plain explanation and how we handled it\\\midrule
+\textbf{Look-ahead bias} & Using future information by accident (e.g.\ fitting CPD on the full sample, then trading on it). Fix: at every forecast date, CPD and HMM are refit using only the previous 750 returns.\\
+\textbf{Walk-forward validation} & Time series cannot be shuffled for cross-validation. We train on the past and predict the next point, every week, expanding the training set. This mimics real use.\\
+\textbf{Embargo} & Targets look 21 days ahead, so a training sample from last week has a target that is not finished yet. We only train on samples whose target window ended \emph{before} the forecast date.\\
+\textbf{Standardisation} & Features rescaled to mean 0, std 1, using training data only (otherwise test information leaks through the scaler).\\
+\textbf{Regularisation} & Penalty on large weights (ridge / L2). Controls variance when features are correlated and data is small.\\
+\textbf{Overfitting} & Fitting noise. Guarded by simple models, fixed hyperparameters, and judging only on out-of-sample forecasts.\\
+\textbf{Why log volatility} & Volatility is positive and right-skewed; its log is closer to normal, so squared-error regression behaves better.\\
+\textbf{Baselines} & A model is only good relative to something: expanding mean, naive ``last vol'', and F0. Ideas must beat F0 to count.\\
+\textbf{$R^2_{\text{OOS}}$} & $1-\frac{\text{SSE of model}}{\text{SSE of reference}}$. Positive means better than the reference, negative means worse. Not the in-sample $R^2$.\\
+\textbf{Diebold--Mariano test} & Tests whether two forecasts have genuinely different accuracy. We use a HAC (Newey--West) variance because 21-day targets overlap by about 80\%, so errors are correlated.\\
+\textbf{AUC} & Probability a random drawdown week gets a higher risk score than a random calm week. 0.5 = coin flip.\\
+\textbf{Brier score} & Mean squared error of the predicted probability; lower is better; compared with the base rate.\\
+\textbf{Block bootstrap} & Resamples chunks (26 weeks) rather than single weeks, keeping time dependence, to get a confidence interval for the AUC gain.\\
+\textbf{Event validation} & Precision and recall of breaks near 9 known crises (window $\pm$20 days), compared with random break placement. It shows \emph{localisation}, not prediction.\\\bottomrule
+\end{tabular}
+
+\h{6. Numbers to memorise}
+\begin{tabular}{@{}p{3.1in}p{3.7in}@{}}
+\textbf{Detection} & \textbf{Volatility forecasting (637 OOS)}\\
+PELT on returns: 16 breaks & Baseline F0: $R^2$ vs mean = 0.333\\
+Recall $\pm$20 days: 56\% (random: 14\%) & +CPD: $-$2.2\% vs F0, $p=0.62$\\
+Recall $\pm$40 days: 67\% (random: 25\%) & +HMM: $-$1.2\% vs F0, $p=0.28$\\
+HMM: recall 67\%, but 43 switches & +VIX: +16.6\%, $p=0.006$ (VIX only +17.8\%)\\
+CPD vs HMM label agreement: 84.1\% & CPD+HMM alone: $-$41.5\%, $p=0.002$\\[4pt]
+\textbf{Drawdown forecasting} & \textbf{Allocation backtest (2011--2025, 10 bp costs)}\\
+AUC 0.43 to 0.56 (coin-flip level) & Buy and hold: Sharpe 0.46, max drawdown $-$38.4\%\\
+All bootstrap CIs for gain include 0 & CPD rule: Sharpe 0.32, max DD $-$26.1\%\\
+Only 86 positives (low power) & HMM rule: Sharpe 0.59, max DD $-$26.1\%\\
+ & Static 60/40 NIFTY/gold: Sharpe 0.71 (best)\\
+\end{tabular}
+
+\h{7. Likely questions and short answers}
+\q{Is this really machine learning?}
+CPD and the HMM are unsupervised learning (structure discovery with no labels); ridge and logistic regression are supervised learning with a proper train/test protocol. The ML contribution is the careful out-of-sample test of whether discovered structure has predictive value.
+
+\q{What is a regime, and what is a change point?}
+A regime is a period with stable statistical behaviour (mean, volatility). A change point is where that behaviour shifts.
+
+\q{Why not just use the HMM?}
+It needs the number of states fixed and a Gaussian assumption. CPD makes no such choice; its tuning knob is the penalty. We use the HMM as a benchmark, and it agrees with CPD on 84\% of days.
+
+\q{How did you choose the penalty? Isn't that tuning?}
+Fixed a priori by a BIC-style rule $3\ln n$, not tuned on outcomes. We show a sensitivity plot (84 breaks at $\beta{=}5$ down to 3 at $\beta{=}160$) and say precision and recall depend on it.
+
+\q{Can CPD predict a crisis before it happens?}
+No, and we say so. A break is detected only after post-shift data accumulates; offline CPD even uses future data. What may be predictable is what \emph{follows} (volatility persists), so we tested that, and regime features added nothing beyond trailing volatility and VIX.
+
+\q{Why is a negative result acceptable?}
+Because it is honest and informative: the regime flags describe volatility but are redundant for forecasting. The VIX, a market-implied measure, is genuinely informative.
+
+\q{Why did CPD recall look so good with the volatility series?}
+That series gave 105 breaks, so random placement alone reaches 62\% recall. We therefore compare against random baselines and at matched break counts.
+
+\q{How do you know there is no data leakage?}
+Features use only data before the forecast date; PELT and HMM are refit on trailing windows; scaler and models fit on training data only; the embargo drops training samples whose target window overlaps the forecast date; hyperparameters are fixed.
+
+\q{Why ridge and logistic regression instead of random forests / neural nets?}
+Small, noisy, overlapping sample; the goal is to test marginal information of regime features, for which an interpretable linear model is the fair, low-variance choice. Non-linear models are listed as future work.
+
+\q{Why does the backtest not beat buy-and-hold on return?}
+Regime rules cut drawdown ($-$38\% to about $-$26\%) but switching late costs return. The static 60/40 NIFTY/gold mix did better, so much of the gain from ``moving to gold'' is a gold effect, not timing skill. Consistent with the forecasting result.
+
+\q{What are the main limitations?}
+Single 15-year history; only 9 hand-picked event dates (approximate, to be verified); 86 drawdown positives clustered in few episodes; overlapping targets; no multiple-testing correction; ETF proxies and Yahoo data; fixed, untuned hyperparameters.
+
+\q{What would you do next?}
+Online CPD to measure real detection delay; leading indicators (flows, credit spreads, option skew); tuned and non-linear models; formal multiple-testing control; more assets.
+
+\h{8. Do-not-say list (avoid these claims)}
+\begin{itemize}
+\item Do \emph{not} say CPD ``predicts'' crises or gives alpha. It localises shifts after the fact; forecasting skill was not found.
+\item Do \emph{not} quote the 100\% recall on volatility breaks without mentioning 105 breaks and the random baseline.
+\item Do \emph{not} present event dates as exact: they are approximate until verified against sources.
+\end{itemize}
+\end{document}

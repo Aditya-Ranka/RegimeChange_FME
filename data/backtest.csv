@@ -1,0 +1,6 @@
+strategy,CAGR,Vol,Sharpe,MaxDD,Calmar,Switches
+Buy&Hold NIFTY,10.39,16.52,0.46,-38.4,0.27,0
+Static 60/40 NIFTY/Gold,12.04,11.99,0.71,-25.8,0.47,0
+CPD regime (walk-fwd),7.58,15.01,0.32,-26.1,0.29,18
+HMM regime (walk-fwd),11.19,13.42,0.59,-26.1,0.43,36
+VIX>25 rule,5.74,13.9,0.21,-27.1,0.21,84

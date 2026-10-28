@@ -1,0 +1,13 @@
+method,margin,n,precision,recall,mean_dist
+PELT-Normal (returns),10,16,0.25,0.444,73.9
+PELT-Normal (returns),20,16,0.375,0.556,73.9
+PELT-Normal (returns),40,16,0.562,0.667,73.9
+PELT-L2 (log-vol),10,105,0.076,0.889,4.7
+PELT-L2 (log-vol),20,105,0.114,1.0,4.7
+PELT-L2 (log-vol),40,105,0.2,1.0,4.7
+BinSeg-L2 (log-vol),10,102,0.069,0.778,7.0
+BinSeg-L2 (log-vol),20,102,0.118,1.0,7.0
+BinSeg-L2 (log-vol),40,102,0.186,1.0,7.0
+HMM-2 (returns),10,43,0.163,0.667,44.6
+HMM-2 (returns),20,43,0.233,0.667,44.6
+HMM-2 (returns),40,43,0.233,0.667,44.6
